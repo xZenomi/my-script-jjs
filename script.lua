@@ -20,7 +20,7 @@ end)
 -- 2. ระบบ Save / Load Config
 local configFileName = "ZpProject_Config.json"
 local defaultToggles = {
-    AutoFlyFarm = false,
+    AutoOpen = false,
     FastPrompt = false,
     ESP = false
 }
@@ -50,7 +50,7 @@ end
 
 getgenv().ZpToggles = loadConfig()
 
--- 3. UI ด้านบนบอกสถานะประตูและสถานะการบิน
+-- 3. UI ด้านบนบอกสถานะประตู
 local topGui = Instance.new("ScreenGui", playerGui)
 topGui.Name = "DoorTopTrackerUI"
 topGui.ResetOnSpawn = false
@@ -149,8 +149,8 @@ local function createButton(name, key, yPos)
     end)
 end
 
--- สร้างปุ่มใช้งาน
-createButton("Auto High Fly", "AutoFlyFarm", 45)
+-- สร้างปุ่มใช้งาน (เปลี่ยนจาก Auto High Fly เป็น Auto Open Near)
+createButton("Auto Open Near", "AutoOpen", 45)
 createButton("Fast Door Prompt", "FastPrompt", 88)
 createButton("ESP & Distance", "ESP", 131)
 
@@ -219,11 +219,7 @@ task.spawn(function()
     end
 end)
 
--- 6. ลูปหลักจัดการระบบบิน (บินสูง 220 studs, จอดหน้าประตู 5 studs, หน่วงเวลารอเปิด)
-local flyHeight = 220
-local flightState = "UP"
-local actionTimer = 0
-
+-- 6. ลูปหลักระบบ Auto Open Near (เดินใกล้ประตูไหน กดเปิดให้อัตโนมัติทันทีในระยะประชิด)
 getgenv().ZpConnection = RunService.Heartbeat:Connect(function()
     pcall(function()
         local char = localPlayer.Character
@@ -238,7 +234,7 @@ getgenv().ZpConnection = RunService.Heartbeat:Connect(function()
                 if door and door.Parent then
                     local doorPos = door:IsA("Model") and door:GetPivot().Position or door.Position
                     if doorPos then
-                        local dist = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(doorPos.X, 0, doorPos.Z)).Magnitude
+                        local dist = (hrp.Position - doorPos).Magnitude
                         if not closestDist or dist < closestDist then
                             closestDist = dist
                             closestDoor = door
@@ -253,7 +249,7 @@ getgenv().ZpConnection = RunService.Heartbeat:Connect(function()
                 if door and door.Parent then
                     for _, desc in ipairs(door:GetDescendants()) do
                         if desc:IsA("ProximityPrompt") then
-                            desc.HoldDuration = 0.15
+                            desc.HoldDuration = 0.05
                         end
                     end
                 end
@@ -281,76 +277,28 @@ getgenv().ZpConnection = RunService.Heartbeat:Connect(function()
         local doorCount = #cachedDoors
         if doorCount > 0 then
             local dText = closestDist and (math.floor(closestDist) .. " studs") or "N/A"
-            local stateText = toggles.AutoFlyFarm and ("[" .. flightState .. "]") or "[OFF]"
+            local stateText = toggles.AutoOpen and "[ACTIVE]" or "[OFF]"
             topLabel.Text = string.format("State: %s | Doors: %d | Dist: %s", stateText, doorCount, dText)
         else
             topLabel.Text = "Status: Scanning Doors... (0)"
         end
 
-        -- ระบบ Auto High Fly
-        if toggles.AutoFlyFarm and closestDoor and char and char:FindFirstChild("HumanoidRootPart") then
-            local hrp = char.HumanoidRootPart
-            local doorCF = closestDoor:IsA("Model") and closestDoor:GetPivot() or CFrame.new(closestDoor.Position)
-            local doorPos = doorCF.Position
-            
-            -- คำนวณจุดยืนหน้าประตู ถอยห่าง 5 studs จากด้านหน้า
-            local standoffPos = doorPos - (doorCF.LookVector * 5)
-            local targetLandPos = Vector3.new(standoffPos.X, doorPos.Y, standoffPos.Z)
-
-            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            local currentPos = hrp.Position
-            local horizontalDist = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(targetLandPos.X, 0, targetLandPos.Z)).Magnitude
-
-            if flightState == "UP" then
-                local upTarget = Vector3.new(currentPos.X, doorPos.Y + flyHeight, currentPos.Z)
-                if math.abs(currentPos.Y - (doorPos.Y + flyHeight)) > 4 then
-                    hrp.CFrame = CFrame.new(currentPos:Lerp(upTarget, 0.25))
-                else
-                    flightState = "CRUISE"
-                end
-
-            elseif flightState == "CRUISE" then
-                local cruiseTarget = Vector3.new(targetLandPos.X, doorPos.Y + flyHeight, targetLandPos.Z)
-                if horizontalDist > 6 then
-                    local nextPos = Vector3.new(currentPos.X, doorPos.Y + flyHeight, currentPos.Z):Lerp(cruiseTarget, 0.2)
-                    hrp.CFrame = CFrame.new(nextPos)
-                else
-                    flightState = "DOWN"
-                end
-
-            elseif flightState == "DOWN" then
-                local landTarget = Vector3.new(targetLandPos.X, doorPos.Y, targetLandPos.Z)
-                if math.abs(currentPos.Y - landTarget.Y) > 4 then
-                    hrp.CFrame = CFrame.new(currentPos:Lerp(landTarget, 0.25))
-                else
-                    hrp.CFrame = CFrame.new(landTarget, doorPos)
-
-                    -- ยืนรอนิ่งๆ 0.3 วิให้จอดสนิทก่อนค่อยเปิด
-                    if actionTimer == 0 then
-                        actionTimer = tick()
-                    elseif (tick() - actionTimer) >= 0.3 then
-                        for _, desc in ipairs(closestDoor:GetDescendants()) do
-                            if desc:IsA("ProximityPrompt") and desc.Enabled then
-                                if fireproximityprompt then
-                                    fireproximityprompt(desc)
-                                else
-                                    desc:InputHoldBegin()
-                                    task.wait(0.05)
-                                    desc:InputHoldEnd()
-                                end
-                                break
-                            end
-                        end
-                        actionTimer = 0
-                        flightState = "UP"
+        -- ระบบ Auto Open เมื่อเดินเข้าใกล้ประตู (ระยะไม่เกิน 12 studs)
+        if toggles.AutoOpen and closestDoor and closestDist and closestDist <= 12 then
+            for _, desc in ipairs(closestDoor:GetDescendants()) do
+                if desc:IsA("ProximityPrompt") and desc.Enabled then
+                    if fireproximityprompt then
+                        fireproximityprompt(desc)
+                    else
+                        desc:InputHoldBegin()
+                        task.wait(0.01)
+                        desc:InputHoldEnd()
                     end
+                    break
                 end
             end
-        else
-            flightState = "UP"
-            actionTimer = 0
         end
     end)
 end)
 
-print("zp project (beta) [Stable Flight Mode Restored] loaded successfully!")
+print("zp project (beta) [Auto Open Near Mode] loaded successfully!")
